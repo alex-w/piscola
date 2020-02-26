@@ -182,9 +182,9 @@ class sn(object):
                 pickle.dump(self, pfile, pickle.HIGHEST_PROTOCOL)
 
 
-    #######################################################
-    ###################### filters ########################
-    #######################################################
+    ############################################################################
+    ################################ Filters ###################################
+    ############################################################################
 
     def call_filters(self):
         """Obtains the filters's transmission function for the observed bands and the Bessell bands."""
@@ -360,9 +360,31 @@ class sn(object):
         self.pivot_band = band_list[idx]
 
 
-    #######################################################
-    ######################## SED ##########################
-    #######################################################
+    def delete_bands(self, bands_list, verbose=False):
+        """Delete chosen bands together with the data in it.
+
+        Parameters
+        ----------
+        bands : list
+            List of bands.
+        verbose : bool, default 'False'
+            If 'True', a warning is given when a band from 'bands' was found within the SN bands.
+
+        """
+
+        for band in bands_list:
+            if band in self.bands:
+                self.data.pop(band, None)
+                self.filters.pop(band, None)
+                self.bands.remove(band)
+            else:
+                if verbose:
+                    print(f'Warning, {band} not found!')
+
+
+    ############################################################################
+    ############################### SED template ###############################
+    ############################################################################
 
     def print_sed_templates(self):
         """Prints all the available SED templates in the 'templates' directory"""
@@ -439,123 +461,167 @@ class sn(object):
                                                            self.filters[band]['wave'], self.filters[band]['transmission'],
                                                            self.filters[band]['response_type'])
 
+    ############################################################################
+    ########################### Light Curves Data ##############################
+    ############################################################################
 
-    def plot_sed_state(self, save=False, fig_name=None):
-        """Plots the current state of the SED.
+    def mask_data(self, band_list=None, mask_phase=True, min_phase=-20, max_phase=40, mask_snr=False, snr=3):
+       """Mask the data with the given S/N ratio and/or within the given range of days respect to maximum in B band.
 
-        Parameters
-        ----------
-        save : bool, default 'False'
-            If true, saves the plot into a file.
-        fig_name : str, default 'None'
-            Name of the saved plot. If 'None' is used the name of the file will be '{self.name}_sed{self.phase}.png'.
-            Only works if 'save' is set to 'True'.
+       NOTE: Bands with less than 3 data points after mask is applied will be deleted.
 
-        """
+       Parameters
+       ----------
+       band_list : list, default 'None'
+       mask_phase : bool, default 'False'
+           If 'True', keeps the flux values within the given phase range set by 'min_phase' and 'max_phase'.
+            An initial estimation of the peak is needed first (can be set manually).
+       min_phase : float, default '-20'
+           Minimum phase threshold applied to mask data.
+       max_phase : float, default '40'
+           Maximum phase threshold applied to mask data.
+           List of bands to mask. If 'None', the mask is applied to all bands in self.bands
+       mask_snr : bool, default 'True'
+           If 'True', keeps the flux values with S/N ratio greater or equal to the threshold 'snr'.
+       snr : float, default '3'
+           S/N ratio threshold applied to mask data.
 
-        f, ax = plt.subplots(figsize=(8,6))
-        ax.plot(self.sed['wave'], self.sed['flux'])
-        ax.set_xlabel(r'Wavelength ($\AA$)', fontsize=18, family='serif')
-        ax.set_ylabel(r'Flux [erg cm$^{-2}$ s$^{-1}$ $\AA^{-1}$]', fontsize=18, family='serif')
-        ax.set_title(r'SED current state', fontsize=18, family='serif')
-        ax.xaxis.set_tick_params(labelsize=15)
-        ax.yaxis.set_tick_params(labelsize=15)
-        ax.minorticks_on()
-        ax.tick_params(which='major', length=6, width=1, direction='in', top=True, right=True)
-        ax.tick_params(which='minor', length=3, width=1, direction='in', top=True, right=True)
+       """
 
-        if save:
-            if fig_name is None:
-                fig_name = f'{self.name}_sed{self.phase}.png'
-            f.tight_layout()
-            plt.savefig(f'plots/{fig_name}')
+       if band_list is None:
+           band_list = self.bands
 
-        plt.show()
+       bands2delete = []
 
+       if mask_phase:
+           assert self.tmax, 'An initial estimation of the peak is needed first!'
 
-    # this function might not be necessary for the release of the code
-    def plot_sed_and_filters(self, filter_list=None, save=False, fig_name=None):
-        """Plots the current state of the SED.
+           for band in band_list:
+               mask = np.where((self.data[band]['mjd'] - self.tmax >= min_phase*(1+self.z)) &
+                               (self.data[band]['mjd'] - self.tmax <= max_phase*(1+self.z))
+                              )
+               self.data[band]['mjd'] = self.data[band]['mjd'][mask]
+               self.data[band]['flux'] = self.data[band]['flux'][mask]
+               self.data[band]['flux_err'] = self.data[band]['flux_err'][mask]
 
-        Parameters
-        ----------
-        filter_list : list, default 'None'
-            List of filters to plot.
-        save : bool, default 'False'
-            If true, saves the plot into a file.
-        fig_name : str, default 'None'
-            Name of the saved plot. If 'None' is used the name of the file will be '{self.name}_sed{self.phase}.png'.
-            Only works if 'save' is set to 'True'.
+               if len(self.data[band]['flux']) <= 2:
+                   bands2delete.append(band)
 
-        """
+       if mask_snr:
+           for band in band_list:
+               mask = np.where(np.abs(self.data[band]['flux']/self.data[band]['flux_err']) >= snr)
+               self.data[band]['mjd'] = self.data[band]['mjd'][mask]
+               self.data[band]['flux'] = self.data[band]['flux'][mask]
+               self.data[band]['flux_err'] = self.data[band]['flux_err'][mask]
 
-        if filter_list is None:
-            filter_list = self.bands
+               if len(self.data[band]['flux']) <= 2:
+                   bands2delete.append(band)
 
-        f, ax = plt.subplots(figsize=(8,6))
-        ax.plot(self.sed['wave'], self.sed['flux']/self.sed['flux'].max())
-
-        limits = np.empty(0)
-        for band in filter_list:
-            norm = self.filters[band]['transmission'].max()
-            ax.plot(self.filters[band]['wave'], self.filters[band]['transmission']/norm, label=band)
-            limits = np.r_[limits, self.filters[band]['wave']]
-
-        ax.set_xlabel(r'Wavelength ($\AA$)', fontsize=18)
-        ax.set_ylabel('Relative Flux', fontsize=18)
-        ax.set_title(r'SED current state + filters', fontsize=18)
-        ax.xaxis.set_tick_params(labelsize=15)
-        ax.yaxis.set_tick_params(labelsize=15)
-        ax.set_xlim(limits.min(), limits.max())
-        ax.set_ylim(0,1)
-        ax.minorticks_on()
-        ax.tick_params(which='major', length=6, width=1, direction='in', top=True, right=True)
-        ax.tick_params(which='minor', length=3, width=1, direction='in', top=True, right=True)
-        plt.legend()
-
-        if save:
-            if fig_name is None:
-                fig_name = f'{self.name}_sed{self.phase}_filters.png'
-            f.tight_layout()
-            plt.savefig(f'plots/{fig_name}')
-
-        plt.show()
+       self.delete_bands(bands2delete)  # delete bands with less than 3 data points after applying mask
 
 
-    # this function might not be necessary for the release of the code
-    def test_sed_flux(self, verbose=False):
-        '''Plots the SED with the integrated fluxes per band.'''
+    def plot_data(self, band_list=None, plot_type='mag', save=False, fig_name=None):
+       """Plot the SN light curves.
 
-        fluxes = {}
-        f, ax = plt.subplots(figsize=(8,6))
-        ax.plot(self.sed['wave'], self.sed['flux'])
+       Negative fluxes are masked out if magnitudes are plotted.
 
-        for band in self.filters.keys():
-            # check if the filter wavelength is within the permited SED wavelength range
-            min_idx, max_idx = filter_effective_range(self.filters[band]['transmission'])
-            trunc_filt_wave = self.filters[band]['wave'][min_idx:max_idx]
+       Parameters
+       ----------
+       band_list : list, default 'None'
+           List of filters to plot. If 'None', band list is set to 'self.bands'.
+       plot_type : str, default 'mag'
+           Type of value plotted: either 'mag' or 'flux'.
+       save : bool, default 'False'
+           If true, saves the plot into a file.
+       fig_name : str, default 'None'
+           Name of the saved plot. If 'None' is used the name of the file will be ''{self.name}_sed{self.phase}.png'.
+           Only works if 'save' is set to 'True'.
 
-            if (self.sed['wave'].max() >= trunc_filt_wave.max()) and (self.sed['wave'].min() <= trunc_filt_wave.min()):
-                flux_band = run_filter(self.sed['wave'], self.sed['flux'], self.filters[band]['wave'],
-                                       self.filters[band]['transmission'], self.filters[band]['response_type'])
-                ax.plot(self.filters[band]['eff_wave'], flux_band, 'o', label=band)
-                fluxes.update({band:flux_band})
+       """
 
-        ax.set_xlabel(r'wavelength ($\AA$)', fontsize=18)
-        ax.set_ylabel('flux', fontsize=18)
-        ax.set_title(r'SED current state', fontsize=18)
-        ax.xaxis.set_tick_params(labelsize=15)
-        ax.yaxis.set_tick_params(labelsize=15)
-        plt.legend()
+       assert (plot_type=='mag' or plot_type=='flux'), f'"{plot_type}" is not a valid plot type.'
+       new_palette = [plt.get_cmap('Dark2')(i) for i in np.arange(8)] + [plt.get_cmap('Set1')(i) for i in np.arange(8)]
 
-        plt.show()
+       if band_list is None:
+           band_list = self.bands
 
-        if verbose:
-            print('current SED fluxes:\n', fluxes)
+       exp = np.round(np.log10(self.data[band_list[0]]['flux'].max()), 0)
+       y_norm = 10**exp
 
-    #######################################################
-    ###################### lcs fit ########################
-    #######################################################
+       # to set plot limits
+       if plot_type=='flux':
+           plot_lim_vals = [[self.data[band]['flux'].min()/y_norm, self.data[band]['flux'].max()/y_norm] for band in self.bands]
+           plot_lim_vals = np.ndarray.flatten(np.asarray(plot_lim_vals))
+           ymin_lim = np.r_[plot_lim_vals, 0.0].min()*0.9
+           if ymin_lim < 0.0:
+               ymin_lim *= 1.1/0.9
+           ymax_lim = plot_lim_vals.max()*1.1
+       elif plot_type=='mag':
+           plot_lim_vals = [[np.nanmin(-2.5*np.log10(self.data[band]['flux']) + self.data[band]['zp']),
+                             np.nanmax(-2.5*np.log10(self.data[band]['flux']) + self.data[band]['zp'])] for band in self.bands]
+           plot_lim_vals = np.ndarray.flatten(np.asarray(plot_lim_vals))
+           ymin_lim = np.nanmin(plot_lim_vals)*0.98
+           ymax_lim = np.nanmax(plot_lim_vals)*1.02
+
+       f, ax = plt.subplots(figsize=(8,6))
+       for i, band in enumerate(band_list):
+           if plot_type=='flux':
+               time, flux, err = np.copy(self.data[band]['mjd']), np.copy(self.data[band]['flux']), np.copy(self.data[band]['flux_err'])
+               flux, err = flux/y_norm, err/y_norm
+               ax.errorbar(time, flux, err, fmt='o', capsize=3, label=band, color=new_palette[i])
+               ylabel = r'Flux [10$^{%.0f}$ erg cm$^{-2}$ s$^{-1}$ $\AA^{-1}$]'%exp
+           elif plot_type=='mag':
+               ylabel = 'Apparent Magnitude'
+               mask = np.where(self.data[band]['flux'] > 0)
+               mjd = self.data[band]['mjd'][mask]
+               mag = -2.5*np.log10(self.data[band]['flux'][mask]) + self.data[band]['zp']
+               err = np.abs(2.5*self.data[band]['flux_err'][mask]/(self.data[band]['flux'][mask]*np.log(10)))
+
+               ax.errorbar(mjd, mag, err, fmt='o', capsize=3, label=band, color=new_palette[i])
+
+       ax.set_ylabel(ylabel, fontsize=16, family='serif')
+       ax.set_xlabel('Modified Julian Date', fontsize=16, family='serif')
+       ax.set_title(f'{self.name} (z = {self.z:.5})', fontsize=18, family='serif')
+       ax.minorticks_on()
+       ax.tick_params(which='major', length=8, width=1, direction='in', top=True, right=True, labelsize=16)
+       ax.tick_params(which='minor', length=4, width=1, direction='in', top=True, right=True, labelsize=16)
+       ax.legend(fontsize=13)
+       ax.set_ylim(ymin_lim, ymax_lim)
+
+       if plot_type=='mag':
+           plt.gca().invert_yaxis()
+
+       if save:
+           if fig_name is None:
+               fig_name = f'{self.name}_lcs.png'
+           f.tight_layout()
+           plt.savefig(f'plots/{fig_name}')
+
+       plt.show()
+
+
+    def normalize_data(self):
+       """Normalize the fluxes and zero-points.
+
+       Fluxes are converted to physical units and the magnitude system is changed to 'Vega'.
+       """
+
+       for band in self.bands:
+           mag_sys = self.data[band]['mag_sys']
+
+           zp = calc_zp(self.filters[band]['wave'], self.filters[band]['transmission'],
+                        self.filters[band]['response_type'], mag_sys, band)
+           zp_vega = calc_zp(self.filters[band]['wave'], self.filters[band]['transmission'],
+                        self.filters[band]['response_type'], 'vega')
+
+           self.data[band]['flux'] = self.data[band]['flux']*10**(-0.4*(self.data[band]['zp'] - zp))
+           self.data[band]['flux_err'] = self.data[band]['flux_err']*10**(-0.4*(self.data[band]['zp'] - zp))
+           self.data[band]['zp'] = zp_vega
+           self.data[band]['mag_sys'] = 'VEGA'
+
+    ############################################################################
+    ############################ Light Curves Fits #############################
+    ############################################################################
 
     def fit_lcs(self, kernel='matern52'):
         """Fits the data for each band using gaussian process
@@ -594,7 +660,7 @@ class sn(object):
             peakidxs = peak.indexes(flux, thres=.3, min_dist=5//(time[1]-time[0]))
             # pick the index of the first peak in case some band has 2 peaks (like IR bands)
             idx_max = np.asarray([idx for idx in peakidxs if all(flux[:idx]<flux[idx])]).min()
-            self.tmax = time[idx_max]
+            self.tmax = np.round(time[idx_max], 2)
 
             phaseXwave = np.copy(timeXwave)
             phaseXwave.T[0] = (phaseXwave.T[0] - self.tmax)/(1 + self.z)
@@ -612,26 +678,6 @@ class sn(object):
             time, phase, flux, err = timeXwave.T[0][inds], phaseXwave.T[0][inds], mu[inds], std[inds]
             self.lc_fits[band] = {'mjd':time, 'phase':phase, 'flux':flux, 'std':err}
 
-
-        '''
-        ########## corrections ############
-        # extinction correction
-        wave = timeXwave.T[1]
-        A_wave = extinction_wave(wave, self.ra, self.dec)
-        mu /= 10**(-0.4*A_wave)
-        std /= 10**(-0.4*A_wave)
-
-        # redshift correction
-        timeXwave /= (1 + self.z)
-        mu *= (1 + self.z)
-        std *= (1 + self.z)
-
-        # epochs in phase
-        phaseXwave = np.copy(timeXwave)
-        phaseXwave.T[0] -= self.tmax/(1 + self.z)
-
-        self.lc_fits['phaseXwave'], self.lc_fits['mu'], self.lc_fits['std'] = phaseXwave, mu, std
-        '''
 
     def plot_fits(self, plot_together=True, plot_type='mag', save=False, fig_name=None):
         """Plots the light-curves fits results.
@@ -751,323 +797,9 @@ class sn(object):
 
         plt.show()
 
-
-    #######################################################
-    ####################### data ##########################
-    #######################################################
-
-    def mask_data(self, band_list=None, mask_phase=True, min_phase=-20, max_phase=40, mask_snr=False, snr=3):
-        """Mask the data with the given S/N ratio and/or within the given range of days respect to maximum in B band.
-
-        NOTE: Bands with less than 3 data points after mask is applied will be deleted.
-
-        Parameters
-        ----------
-        band_list : list, default 'None'
-        mask_phase : bool, default 'False'
-            If 'True', keeps the flux values within the given phase range set by 'min_phase' and 'max_phase'.
-             An initial estimation of the peak is needed first (can be set manually).
-        min_phase : float, default '-20'
-            Minimum phase threshold applied to mask data.
-        max_phase : float, default '40'
-            Maximum phase threshold applied to mask data.
-            List of bands to mask. If 'None', the mask is applied to all bands in self.bands
-        mask_snr : bool, default 'True'
-            If 'True', keeps the flux values with S/N ratio greater or equal to the threshold 'snr'.
-        snr : float, default '3'
-            S/N ratio threshold applied to mask data.
-
-        """
-
-        if band_list is None:
-            band_list = self.bands
-
-        bands2delete = []
-
-        if mask_phase:
-            assert self.tmax, 'An initial estimation of the peak is needed first!'
-
-            for band in band_list:
-                mask = np.where((self.data[band]['mjd'] - self.tmax >= min_phase*(1+self.z)) &
-                                (self.data[band]['mjd'] - self.tmax <= max_phase*(1+self.z))
-                               )
-                self.data[band]['mjd'] = self.data[band]['mjd'][mask]
-                self.data[band]['flux'] = self.data[band]['flux'][mask]
-                self.data[band]['flux_err'] = self.data[band]['flux_err'][mask]
-
-                if len(self.data[band]['flux']) <= 2:
-                    bands2delete.append(band)
-
-        if mask_snr:
-            for band in band_list:
-                mask = np.where(np.abs(self.data[band]['flux']/self.data[band]['flux_err']) >= snr)
-                self.data[band]['mjd'] = self.data[band]['mjd'][mask]
-                self.data[band]['flux'] = self.data[band]['flux'][mask]
-                self.data[band]['flux_err'] = self.data[band]['flux_err'][mask]
-
-                if len(self.data[band]['flux']) <= 2:
-                    bands2delete.append(band)
-
-        self.delete_bands(bands2delete)  # delete bands with less than 3 data points after applying mask
-
-
-    # this function might not be necessary for the release of the code
-    def integrate_filters(self, band_list=None, value_type='flux'):
-        """Integrate the current state of the SED through the filters.
-
-        Parameters
-        ----------
-        band_list : list, default 'None'
-            List of filters to plot. If 'None', band list is set to 'self.filters.keys()'.
-        value_type : str, default 'flux'
-            Type of data to be returned: either 'flux' or 'mag'.
-
-        """
-
-        assert (value_type=='mag' or value_type=='flux'), f'"{value_type}" is not a valid type.'
-
-        if band_list is None:
-            band_list = self.filters.keys()
-
-        idxs = {band:filter_effective_range(self.filters[band]['transmission']) for band in band_list}
-
-        if value_type=='flux':
-            return {band:run_filter(self.sed['wave'], self.sed['flux'], self.filters[band]['wave'],
-                                    self.filters[band]['transmission'], self.filters[band]['response_type'])
-                    for band in band_list if ( self.sed['wave'].max() >= self.filters[band]['wave'][idxs[band][1]] )
-                    and ( self.sed['wave'].min() <= self.filters[band]['wave'][idxs[band][0]])}
-
-        mags = {band:-2.5*np.log10(run_filter(self.sed['wave'], self.sed['flux'], self.filters[band]['wave'],
-                                    self.filters[band]['transmission'], self.filters[band]['response_type'])) + self.data[band]['zp']
-                    for band in band_list if band in self.bands and ( self.sed['wave'].max() >= self.filters[band]['wave'][idxs[band][1]] )
-                    and ( self.sed['wave'].min() <= self.filters[band]['wave'][idxs[band][0]])}
-
-        mags.update({band:-2.5*np.log10(run_filter(self.sed['wave'], self.sed['flux'], self.filters[band]['wave'],
-                                    self.filters[band]['transmission'], self.filters[band]['response_type'])) + self.final_results[band]['zp']
-                    for band in band_list if len(self.final_results[band]['phase'])!=0 and band not in mags.keys() and
-                     ( self.sed['wave'].max() >= self.filters[band]['wave'][idxs[band][1]] )
-                    and ( self.sed['wave'].min() <= self.filters[band]['wave'][idxs[band][0]])})
-
-        print(mags)
-
-
-    def plot_data(self, band_list=None, plot_type='mag', save=False, fig_name=None):
-        """Plot the SN light curves.
-
-        Negative fluxes are masked out if magnitudes are plotted.
-
-        Parameters
-        ----------
-        band_list : list, default 'None'
-            List of filters to plot. If 'None', band list is set to 'self.bands'.
-        plot_type : str, default 'mag'
-            Type of value plotted: either 'mag' or 'flux'.
-        save : bool, default 'False'
-            If true, saves the plot into a file.
-        fig_name : str, default 'None'
-            Name of the saved plot. If 'None' is used the name of the file will be ''{self.name}_sed{self.phase}.png'.
-            Only works if 'save' is set to 'True'.
-
-        """
-
-        assert (plot_type=='mag' or plot_type=='flux'), f'"{plot_type}" is not a valid plot type.'
-        new_palette = [plt.get_cmap('Dark2')(i) for i in np.arange(8)] + [plt.get_cmap('Set1')(i) for i in np.arange(8)]
-
-        if band_list is None:
-            band_list = self.bands
-
-        exp = np.round(np.log10(self.data[band_list[0]]['flux'].max()), 0)
-        y_norm = 10**exp
-
-        # to set plot limits
-        if plot_type=='flux':
-            plot_lim_vals = [[self.data[band]['flux'].min()/y_norm, self.data[band]['flux'].max()/y_norm] for band in self.bands]
-            plot_lim_vals = np.ndarray.flatten(np.asarray(plot_lim_vals))
-            ymin_lim = np.r_[plot_lim_vals, 0.0].min()*0.9
-            if ymin_lim < 0.0:
-                ymin_lim *= 1.1/0.9
-            ymax_lim = plot_lim_vals.max()*1.1
-        elif plot_type=='mag':
-            plot_lim_vals = [[np.nanmin(-2.5*np.log10(self.data[band]['flux']) + self.data[band]['zp']),
-                              np.nanmax(-2.5*np.log10(self.data[band]['flux']) + self.data[band]['zp'])] for band in self.bands]
-            plot_lim_vals = np.ndarray.flatten(np.asarray(plot_lim_vals))
-            ymin_lim = np.nanmin(plot_lim_vals)*0.98
-            ymax_lim = np.nanmax(plot_lim_vals)*1.02
-
-        f, ax = plt.subplots(figsize=(8,6))
-        for i, band in enumerate(band_list):
-            if plot_type=='flux':
-                time, flux, err = np.copy(self.data[band]['mjd']), np.copy(self.data[band]['flux']), np.copy(self.data[band]['flux_err'])
-                flux, err = flux/y_norm, err/y_norm
-                ax.errorbar(time, flux, err, fmt='o', capsize=3, label=band, color=new_palette[i])
-                ylabel = r'Flux [10$^{%.0f}$ erg cm$^{-2}$ s$^{-1}$ $\AA^{-1}$]'%exp
-            elif plot_type=='mag':
-                ylabel = 'Apparent Magnitude'
-                mask = np.where(self.data[band]['flux'] > 0)
-                mjd = self.data[band]['mjd'][mask]
-                mag = -2.5*np.log10(self.data[band]['flux'][mask]) + self.data[band]['zp']
-                err = np.abs(2.5*self.data[band]['flux_err'][mask]/(self.data[band]['flux'][mask]*np.log(10)))
-
-                ax.errorbar(mjd, mag, err, fmt='o', capsize=3, label=band, color=new_palette[i])
-
-        ax.set_ylabel(ylabel, fontsize=16, family='serif')
-        ax.set_xlabel('Modified Julian Date', fontsize=16, family='serif')
-        ax.set_title(f'{self.name} (z = {self.z:.5})', fontsize=18, family='serif')
-        ax.minorticks_on()
-        ax.tick_params(which='major', length=8, width=1, direction='in', top=True, right=True, labelsize=16)
-        ax.tick_params(which='minor', length=4, width=1, direction='in', top=True, right=True, labelsize=16)
-        ax.legend(fontsize=13)
-        ax.set_ylim(ymin_lim, ymax_lim)
-
-        if plot_type=='mag':
-            plt.gca().invert_yaxis()
-
-        if save:
-            if fig_name is None:
-                fig_name = f'{self.name}_lcs.png'
-            f.tight_layout()
-            plt.savefig(f'plots/{fig_name}')
-
-        plt.show()
-
-
-    def normalize_data(self):
-        """Normalize the fluxes and zero-points.
-
-        Fluxes are converted to physical units and the magnitude system is changed to 'Vega'.
-        """
-
-        for band in self.bands:
-            mag_sys = self.data[band]['mag_sys']
-
-            zp = calc_zp(self.filters[band]['wave'], self.filters[band]['transmission'],
-                         self.filters[band]['response_type'], mag_sys, band)
-            zp_vega = calc_zp(self.filters[band]['wave'], self.filters[band]['transmission'],
-                         self.filters[band]['response_type'], 'vega')
-
-            self.data[band]['flux'] = self.data[band]['flux']*10**(-0.4*(self.data[band]['zp'] - zp))
-            self.data[band]['flux_err'] = self.data[band]['flux_err']*10**(-0.4*(self.data[band]['zp'] - zp))
-            self.data[band]['zp'] = zp_vega
-            self.data[band]['mag_sys'] = 'VEGA'
-
-
-    def delete_bands(self, bands_list, verbose=False):
-        """Delete chosen bands together with the data in it.
-
-        Parameters
-        ----------
-        bands : list
-            List of bands.
-        verbose : bool, default 'False'
-            If 'True', a warning is given when a band from 'bands' was found within the SN bands.
-
-        """
-
-        for band in bands_list:
-            if band in self.bands:
-                self.data.pop(band, None)
-                self.filters.pop(band, None)
-                self.bands.remove(band)
-            else:
-                if verbose:
-                    print(f'Warning, {band} not found!')
-
-
-    def set_interp_data(self, restframe_phases):
-        """Sets the data to be used for the light-curves corrections.
-
-        Collects the interpolated data (from the fit) within the phase range given by 'restframe_phases',
-        to later on apply extinction and K-corrections to it.
-
-        Parameters
-        ----------
-        restframe_phases : array
-            Array of phases respect to B-band peak.
-
-        """
-
-        mjd_range = self.tmax + restframe_phases*(1+self.z)
-
-        self.lc_interp = {band:{'flux':np.empty(0), 'flux_err':np.empty(0), 'mjd':np.empty(0), 'phase':np.empty(0)}
-                          for band in self.bands}
-        self.lc_correct = {band:{'flux': np.empty(0), 'mag': np.empty(0), 'phase': np.empty(0),
-                                 'flux_err': np.empty(0), 'mag_err': np.empty(0)}
-                              for band in self.filters.keys()}
-        self.lc_final_fits = {band:{'flux': np.empty(0), 'mag': np.empty(0), 'phase': np.empty(0),
-                                    'flux_err': np.empty(0), 'mag_err': np.empty(0)}
-                              for band in self.filters.keys()}
-
-        for band in self.bands:
-            for mjd, phase in zip(mjd_range, restframe_phases):
-                if any(np.abs(self.lc_fits[band]['mjd'] - mjd)<0.1):
-                    idx = np.argmin(np.abs(self.lc_fits[band]['mjd'] - mjd))
-                    self.lc_interp[band]['flux'] = np.r_[self.lc_interp[band]['flux'], self.lc_fits[band]['flux'][idx]]
-                    self.lc_interp[band]['flux_err'] = np.r_[self.lc_interp[band]['flux_err'], self.lc_fits[band]['std'][idx]]
-                    self.lc_interp[band]['mjd'] = np.r_[self.lc_interp[band]['mjd'], mjd]
-                    self.lc_interp[band]['phase'] =  np.r_[self.lc_interp[band]['phase'], phase]
-
-            self.lc_interp[band]['tmax'] = self.lc_fits[band]['tmax']
-            self.lc_interp[band]['zp'] = self.data[band]['zp']
-            self.lc_interp[band]['mag_sys'] = self.data[band]['mag_sys']
-
-            # extinction correction
-            A_lambda = self.filters[band]['A_lambda']
-            self.lc_interp[band]['flux'] /= 10**(-0.4*A_lambda)
-
-
-    def plot_interp_data(self, band_list=None, plot_type='mag'):
-        """Plot the interpolated data from the SN light curve fit given by the function set_interp_data.
-
-        Parameters
-        ----------
-        band_list : list, default 'None'
-            List of bands. If 'None', band list is set to 'self.bands'.
-        plot_type: str, default 'flux'
-            Type of data to be plotted: either 'mag' or 'flux'.
-
-        """
-
-        assert (plot_type=='mag' or plot_type=='flux'), f'"{plot_type}" is not a valid plot type.'
-
-        new_palette = [plt.get_cmap('Dark2')(i) for i in np.arange(8)] + [plt.get_cmap('Set1')(i) for i in np.arange(8)]
-
-        if band_list is None:
-            band_list = self.bands
-
-        f, ax = plt.subplots(figsize=(8,6))
-        for i, band in enumerate(band_list):
-            if plot_type=='flux':
-                ax.errorbar(self.lc_interp[band]['phase'], self.lc_interp[band]['flux'], self.lc_interp[band]['flux_err'],
-                            fmt='o', label=band, color=new_palette[i])
-                ylabel = r'Flux [erg cm$^{-2}$ s$^{-1}$ $\AA^{-1}$]'
-            elif plot_type=='mag':
-                ylabel = 'Apparent Magnitude'
-                mjd = self.lc_interp[band]['phase']
-                mag = -2.5*np.log10(self.lc_interp[band]['flux']) + self.lc_interp[band]['zp']
-                err = np.abs(2.5*self.lc_interp[band]['flux_err']/(self.lc_interp[band]['flux']*np.log(10)))
-
-                ax.errorbar(mjd, mag, err, fmt='o', label=band, color=new_palette[i])
-
-        ax.set_ylabel(ylabel, fontsize=16, family='serif')
-        ax.set_xlabel('Phase', fontsize=16, family='serif')
-        ax.axvline(x=0, color='k', linestyle='--')
-        ax.set_title(f'{self.name} (z = {self.z:.5})', fontsize=18, family='serif')
-        ax.xaxis.set_tick_params(labelsize=15)
-        ax.yaxis.set_tick_params(labelsize=15)
-        ax.minorticks_on()
-        ax.tick_params(which='major', length=8, width=1, direction='in', top=True, right=True)
-        ax.tick_params(which='minor', length=4, width=1, direction='in', top=True, right=True)
-        ax.legend(fontsize=13)
-
-        if plot_type=='mag':
-            plt.gca().invert_yaxis()
-
-        plt.show()
-
-
-    #######################################################
-    ############## light curve corrections ################
-    #######################################################
+    ############################################################################
+    ######################### Light Curves Correction ##########################
+    ############################################################################
 
     def mangle_sed(self, kernel='matern32', method='gp'):
         """Mangles the SED with the given method to match the SN magnitudes.
@@ -1094,13 +826,13 @@ class sn(object):
         sed_df = sed_df[(lc_phases.min() <= sed_df.phase) & (sed_df.phase <= lc_phases.max())]  # to match the available epochs from the lcs
         sed_df = sed_df[sed_df.phase.isin(phases)]  # to match the requested epochs
 
-        # move SED in z and apply extinction
+        # first redshift the SED ("move" it in z) and then apply extinction from MW only
         sed_df.wave, sed_df.flux = sed_df.wave.values*(1+self.z), sed_df.flux.values/(1+self.z)
         sed_df.flux = redden(sed_df.wave.values, sed_df.flux.values, self.ra, self.dec)
 
         for phase in sed_df.phase.unique():
             phase_df = sed_df[sed_df.phase==phase]
-            epoch_wave, epoch_flux = phase_df.wave.values*(1+self.z), phase_df.flux.values/(1+self.z)  # move SED in z
+            epoch_wave, epoch_flux = phase_df.wave.values, phase_df.flux.values
             for band in self.bands:
                 band_flux = run_filter(phase_df.wave.values, phase_df.flux.values, self.filters[band]['wave'],
                                        self.filters[band]['transmission'], self.filters[band]['response_type'])
@@ -1117,33 +849,73 @@ class sn(object):
         ###################################
         ####### set-up for mangling #######
         ###################################
-        # interpolate obs light curves to match the SED phases
+        # minor linear interpolation of observed light curves to match the exact SED phases
         interp_lc_fluxes = {band:np.interp(self.sed_lcs[band]['phase'], self.lc_fits[band]['phase'], self.lc_fits[band]['flux']) for band in self.bands}
         interp_lc_stds = {band:np.interp(self.sed_lcs[band]['phase'], self.lc_fits[band]['phase'], self.lc_fits[band]['std']) for band in self.bands}
         flux_ratios = {band:interp_lc_fluxes[band]/self.sed_lcs[band]['flux'] for band in self.bands}
+        flux_ratios_err = {band:interp_lc_stds[band]/self.sed_lcs[band]['flux'] for band in self.bands}
 
         flux_ratios_array = np.hstack(np.array([flux_ratios[band] for band in self.bands]))
+        flux_ratios_err_array = np.hstack(np.array([flux_ratios_err[band] for band in self.bands]))
         obs_flux_array = np.hstack(np.array([interp_lc_fluxes[band] for band in self.bands]))  # to compare the mangled SED with
+        obs_err_array = np.hstack(np.array([interp_lc_stds[band] for band in self.bands]))  # NECESSARY?
 
-        #time_array = np.hstack(np.array([sed_mjd for band in self.bands]))*(1+self.z) + self.tmax
         phase_array = np.hstack(np.array([sed_phases for band in self.bands]))
         wave_array = np.hstack(np.array([[self.filters[band]['eff_wave']]*len(self.sed_lcs[band]['phase']) for band in self.bands]))
 
         bands_waves = np.hstack(np.array([self.filters[band]['wave'] for band in self.bands]))
-        bands_edges = np.array([bands_waves.min(), bands_waves.max()])  # to match the interpolated grids with the observed data
-
-        epoch_edges = np.array([sed_phases.min(), sed_phases.max()])  # choose same grid as for the fitted light curves
+        bands_edges = np.array([bands_waves.min(), bands_waves.max()])  # to match the grid with the observed data
+        epoch_edges = np.array([sed_phases.min(), sed_phases.max()])  # same here
 
         ################################
         ########## mangle SED ##########
         ################################
-        mangling_results = fit_2dgp(phase_array, wave_array, flux_ratios_array, 0.0,
-                                                    kernel=kernel, x1_edges=epoch_edges, x2_edges=bands_edges, normalize_x1=False)
-        #mangling_results = mangle(phase_array, wave_array, flux_ratios_array, sed_df, obs_flux_array,
-        #                         self.bands, self.filters, kernel=kernel, x1_edges=epoch_edges, x2_edges=bands_edges, normalize_x1=False)
+        #mangling_results = fit_2dgp(phase_array, wave_array, flux_ratios_array, flux_ratios_err_array,
+        #                                            kernel=kernel, x1_edges=epoch_edges, x2_edges=bands_edges, normalize_x1=False)
+        mangling_results = mangle(phase_array, wave_array,
+                                    flux_ratios_array, flux_ratios_err_array,
+                                        sed_df, obs_flux_array, obs_err_array,
+                                            self.bands, self.filters, kernel=kernel,
+                                                x1_edges=epoch_edges, x2_edges=bands_edges, normalize_x1=False)
 
         self.mangling_results = mangling_results
         self.sed_fits['phaseXwave'], self.sed_fits['ratio_mu'], self.sed_fits['ratio_std'] = mangling_results
+        ####################################################
+        phaseXwave, ratio_mu, ratio_std = mangling_results
+        phaseXwave.T[0] = np.round(phaseXwave.T[0], 1)
+
+        sed_flux_array = []
+        sed_err_array = []
+        corr_sed_df = pd.DataFrame(columns=sed_df.columns)
+        for phase in np.unique(phaseXwave.T[0]):
+            if phase in phase_array:
+                mask = np.where(phaseXwave.T[0]==phase)
+                wave = phaseXwave.T[1][mask]
+                ratio = ratio_mu[mask]
+                err = ratio_std[mask]
+
+                phase_df = sed_df[sed_df.phase==phase]
+                sed_flux = np.interp(wave, phase_df.wave.values, phase_df.flux.values)
+                mod_sed_flux = sed_flux*ratio  # convolve SED flux with mangling function
+                mod_sed_err = sed_flux*err
+
+                # correct SED for extinction and then blueshift it ("move" it in z to restframe)
+                mod_sed_flux = deredden(wave, mod_sed_flux, self.ra, self.dec)
+                mod_sed_err = deredden(wave, mod_sed_err, self.ra, self.dec)
+                wave, mod_sed_flux, mod_sed_err = wave/(1+self.z), mod_sed_flux*(1+self.z), mod_sed_err*(1+self.z)
+
+                temp_sed_df = pd.DataFrame({'phase':[phase]*len(wave), 'wave':wave, 'flux':mod_sed_flux, 'err':mod_sed_err})
+                corr_sed_df = corr_sed_df.append(temp_sed_df, ignore_index=True)
+
+                bands_fluxes = [run_filter(wave, mod_sed_flux, self.filters[band]['wave'], self.filters[band]['transmission'],
+                                                                self.filters[band]['response_type']) for band in self.bands]
+                bands_errs = [run_filter(wave, mod_sed_flux, self.filters[band]['wave'], self.filters[band]['transmission'],
+                                                                self.filters[band]['response_type']) for band in self.bands]
+                sed_flux_array.append(bands_fluxes)
+                sed_err_array.append(bands_errs)
+
+        sed_flux_array = np.array(sed_flux_array).T
+        self.sed['corrected_sed'] = corr_sed_df
 
         '''
         # estimate precision of the mangling function
@@ -1318,124 +1090,6 @@ class sn(object):
                 print(f'{band}: {diff:.4f} [mags]')
 
 
-    def correct_extinction(self, scaling=0.86):
-        """Corrects the SED for extinction.
-
-        Corrects the SED for extinction using a given extinction law. The default is the
-        Cardelli, Clayton & Mathis (1989) extinction law; however, this can be changed.
-        Check the extinction package Docs for other options. The scaling refers to the
-        recalibration of the Schlegel, Finkbeiner & Davis (1998) dust map. Check the
-        'scaling' parameter below.
-
-        Parameters
-        ----------
-        scaling : float, default '0.86'
-            Recalibration of the Schlegel, Finkbeiner & Davis (1998) dust map. Either '0.86'
-            for the Schlafly & Finkbeiner (2011) recalibration or '1.0' for the original
-            dust map of Schlegel, Finkbeiner & Davis (1998).
-
-        """
-
-        self.sed['flux'] = deredden(self.sed['wave'], self.sed['flux'], self.ra, self.dec, scaling=scaling)
-        self.sed['flux_err'] = deredden(self.sed['wave'], self.sed['flux_err'], self.ra, self.dec, scaling=scaling)
-
-        self.set_eff_wave()
-
-
-    def kcorrection(self):
-        """Applies K-corrections.
-
-        The K-corrections is not calculated explicitly. This function moves the SED in redshift and then
-        calculates the fluxes and magnitudes at rest-frame.
-
-        """
-
-        self.sed['wave'], self.sed['flux'], self.sed['flux_err'] = self.sed['wave']/(1+self.z), self.sed['flux']*(1+self.z), self.sed['flux_err']*(1+self.z)
-
-        for band in self.filters.keys():
-            # check if the filter wavelength is within the permited SED wavelength range
-            min_idx, max_idx = filter_effective_range(self.filters[band]['transmission'])
-            trunc_filt_wave = self.filters[band]['wave'][min_idx:max_idx]
-
-            if (self.sed['wave'].max() >= trunc_filt_wave.max()) and (self.sed['wave'].min() <= trunc_filt_wave.min()):
-
-                if band in self.bands:
-                    zp = self.data[band]['zp']
-                    mag_sys = self.data[band]['mag_sys']
-                else:
-                    # only for Bessell filters
-                    zp = calc_zp(self.filters[band]['wave'], self.filters[band]['transmission'], self.filters[band]['response_type'], 'vega')
-                    mag_sys = 'VEGA'
-
-                band_flux = run_filter(self.sed['wave'], self.sed['flux'],
-                                       self.filters[band]['wave'], self.filters[band]['transmission'], self.filters[band]['response_type'])
-                band_flux_err = run_filter(self.sed['wave'], self.sed['flux_err'],
-                                           self.filters[band]['wave'], self.filters[band]['transmission'], self.filters[band]['response_type'])
-                band_mag = -2.5*np.log10(band_flux) + zp
-                band_mag_err = np.abs(2.5*band_flux_err/(band_flux*np.log(10)))
-
-                self.lc_correct[band]['flux'] = np.r_[self.lc_correct[band]['flux'], band_flux]
-                self.lc_correct[band]['flux_err'] = np.r_[self.lc_correct[band]['flux_err'], band_flux_err]
-                self.lc_correct[band]['mag'] = np.r_[self.lc_correct[band]['mag'], band_mag]
-                self.lc_correct[band]['mag_err'] = np.r_[self.lc_correct[band]['mag_err'], band_mag_err]
-                self.lc_correct[band]['phase'] = np.r_[self.lc_correct[band]['phase'], self.phase]
-                self.lc_correct[band]['zp'] = zp
-                self.lc_correct[band]['mag_sys'] = mag_sys
-
-        self.set_eff_wave()
-
-
-    def correct_light_curve(self, threshold=0.2, iter_num=0, maxiter=5, scaling=0.86, verbose=False, **mangle_kwargs):
-        """Applies correction to the light curves.
-
-        Runs the 'mangle_sed()', 'correct_extinction()' and 'kcorrection()' functions on the SN data,
-        for every phase given in 'set_interp_data()'.
-
-        Parameters
-        ----------
-        threshold : float, default '0.2'
-            Threshold for the difference between the initial B-band peak estimation and the new estimation.
-        iter_num : int, default '1'
-            This value counts the number of iteration for the light-curves correction process.
-        maxiter : int, default '5'
-            Maximum number of iterations.
-        scaling : float, default '0.86'
-            Check 'correct_extinction()' for more information.
-        **mangle_kwargs :
-            Check 'mangle_sed()' for more information.
-
-        """
-
-        if 'kernel' in mangle_kwargs.keys():
-            assert (mangle_kwargs['kernel']=='matern52' or mangle_kwargs['kernel']=='matern32'
-                    or mangle_kwargs['kernel']=='squaredexp'or mangle_kwargs['kernel']==None), f'"{mangle_kwargs["kernel"]}" is not a valid kernel.'
-
-        if verbose and iter_num==0:
-            print(f'Starting light curve correction for {self.name}...')
-
-        for phase in self.lc_interp[self.pivot_band]['phase']:
-
-            self.phase = phase
-            self.set_sed_epoch()
-
-            try:
-                #self.mangle_sed(**mangle_kwargs)        # first mangle to correct the effective wavelength estimation...
-                #self.set_sed_epoch(set_eff_wave=False)  # reset SED with better estimation (from 1st mangling) of effective wavelengths...
-                self.mangle_sed(**mangle_kwargs)        # mangle again
-            except:
-                if verbose:
-                    print(f'Warning, mangling in phase {phase} failed for {self.name}!')
-                if phase in self.mangling_results:
-                    del self.mangling_results[phase]
-            else:
-                self.correct_extinction(scaling=scaling)
-                self.kcorrection()
-                self.sed_results.update({self.phase:{'wave':self.sed['wave'], 'flux':self.sed['flux'],
-                                                               'flux_err':self.sed['flux_err']}})
-
-        self.check_B_peak(threshold=threshold, iter_num=iter_num, maxiter=maxiter, scaling=scaling, verbose=verbose, **mangle_kwargs)
-
-
     def check_B_peak(self, threshold=0.2, iter_num=0, maxiter=5, scaling=0.86, verbose=False, **mangle_kwargs):
         """Estimate the B-band peak from the corrected light curves.
 
@@ -1495,7 +1149,7 @@ class sn(object):
             self.lc_parameters['phase_max'] = phase_max
 
 
-    def calc_lc_parameters(self):
+    def calculate_lc_params(self):
         """Calculates the SN light curve parameters.
 
         Estimation of B-band peak apparent magnitude (mb), stretch (dm15) and color ((B-V)max) parameters.
@@ -1503,66 +1157,77 @@ class sn(object):
 
         """
 
-        B_band = 'Bessell_B'
-        zpB = self.lc_correct[B_band]['zp']
+        ########################################
+        ######## Calculate Light Curves ########
+        ########################################
+        corrected_lcs = {}
+        lcs_fluxes = []
+        lcs_errs = []
+        corr_sed_df = self.sed['corrected_sed']
+        phases = corr_sed_df.phase.unique()
+        bands = ['Bessell_B', 'Bessell_V']  # THIS IS A TEMPORARY FIX
 
-        # mb
+        for phase in phases:
+            phase_df = corr_sed_df[corr_sed_df.phase==phase]
+            phase_wave = phase_df.wave.values
+            phase_flux = phase_df.flux.values
+            phase_err = phase_df.err.values
+            bands_fluxes = [run_filter(phase_wave, phase_flux, self.filters[band]['wave'], self.filters[band]['transmission'],
+                                                            self.filters[band]['response_type']) for band in bands]
+            bands_errs = [run_filter(phase_wave, phase_err, self.filters[band]['wave'], self.filters[band]['transmission'],
+                                                            self.filters[band]['response_type']) for band in bands]
+            lcs_fluxes.append(bands_fluxes)
+            lcs_errs.append(bands_errs)
+        lcs_fluxes = np.array(lcs_fluxes)
+        lcs_errs = np.array(lcs_errs)
+        corrected_lcs = {band:{'phase':phases, 'flux':lcs_fluxes.T[i], 'err':lcs_errs.T[i]} for i, band in enumerate(bands)}
+        self.corrected_lcs = corrected_lcs
+
+        bessell_b = 'Bessell_B'
+        zp_b = calc_zp(self.filters[bessell_b]['wave'], self.filters[bessell_b]['transmission'],
+                        self.filters[bessell_b]['response_type'], 'vega')
+        self.corrected_lcs[bessell_b]['zp'] = zp_b
+
+        ########################################
+        ### Calculate Light Curve parameters ###
+        ########################################
+        # B-band peak apparent magnitude
         try:
-            #phaseB, fluxB, flux_errB = fit_gp(self.lc_correct[B_band]['phase'], self.lc_correct[B_band]['flux'], self.lc_correct[B_band]['flux_err'])
-            phaseB, fluxB, flux_errB = self.lc_correct[B_band]['phase'], self.lc_correct[B_band]['flux'], self.lc_correct[B_band]['flux_err']
-
-            idx_Bmax = np.argmin(np.abs(phaseB))
-            mb = -2.5*np.log10(fluxB[idx_Bmax]) + zpB
-            dmb = np.abs(2.5*flux_errB[idx_Bmax]/(fluxB[idx_Bmax]*np.log(10)))
+            phase_b, flux_b, flux_err_b = self.corrected_lcs[bessell_b]['phase'], self.corrected_lcs[bessell_b]['flux'], self.corrected_lcs[bessell_b]['err']
+            id_bmax = np.where(phase_b==0.0)[0][0]
+            mb = -2.5*np.log10(flux_b[id_bmax]) + zp_b
+            dmb = np.abs(2.5*flux_err_b[id_bmax]/(flux_b[id_bmax]*np.log(10)))
         except:
             mb = dmb = np.nan
 
-        # stretch
+        # Stretch parameter
         try:
-            if any(np.abs(phaseB-15.) <= 0.2):
-                idx_B15 = np.argmin(np.abs(phaseB-15.))
-                B15 = -2.5*np.log10(fluxB[idx_B15]) + zpB
-                B15_err = np.abs(2.5*flux_errB[idx_B15]/(fluxB[idx_B15]*np.log(10)))
-                dm15 = B15 - mb
-                dm15err = np.sqrt(dmb**2 + B15_err**2)
-            else:
-                dm15 = dm15err = np.nan
+            id_15 = np.where(phase_b==15.0)[0][0]
+            B15 = -2.5*np.log10(flux_b[id_15]) + zp_b
+            B15_err = np.abs(2.5*flux_err_b[id_15]/(flux_b[id_15]*np.log(10)))
+            dm15 = B15 - mb
+            dm15err = np.sqrt(dmb**2 + B15_err**2)
         except:
             dm15 = dm15err = np.nan
 
-        # colour
+        # Colour
         try:
-            V_band = 'Bessell_V'
-            zpV = self.lc_correct[V_band]['zp']
-            #phaseV, fluxV, flux_errV = fit_gp(self.lc_correct[V_band]['phase'], self.lc_correct[V_band]['flux'], self.lc_correct[V_band]['flux_err'])
-            phaseV, fluxV, flux_errV = self.lc_correct[V_band]['phase'], self.lc_correct[V_band]['flux'], self.lc_correct[V_band]['flux_err']
+            bessell_v = 'Bessell_V'
+            zp_v = calc_zp(self.filters[bessell_v]['wave'], self.filters[bessell_v]['transmission'],
+                            self.filters[bessell_v]['response_type'], 'vega')
+            self.corrected_lcs[bessell_v]['zp'] = zp_v
+            phase_v, flux_v, flux_err_v = self.corrected_lcs[bessell_v]['phase'], self.corrected_lcs[bessell_v]['flux'], self.corrected_lcs[bessell_v]['err']
 
-            if any(np.abs(phaseV) <= 0.2):
-                idx_V0 = np.argmin(np.abs(phaseV))
-                V0 = -2.5*np.log10(fluxV[idx_V0]) + zpV
-                V0err = np.abs(2.5*flux_errV[idx_V0]/(fluxV[idx_V0]*np.log(10)))
-                color = mb - V0
-                dcolor = np.sqrt(dmb**2 + V0err**2)
-            else:
-                color = dcolor = np.nan
+            id_v0 = np.where(phase_v==0.0)[0][0]
+            V0 = -2.5*np.log10(flux_v[id_v0]) + zp_v
+            V0err = np.abs(2.5*flux_err_v[id_v0]/(flux_v[id_v0]*np.log(10)))
+            color = mb - V0
+            dcolor = np.sqrt(dmb**2 + V0err**2)
         except:
             color = dcolor = np.nan
 
         self.lc_parameters = {'mb':mb, 'dmb':dmb, 'dm15':dm15,
                               'dm15err':dm15err, 'color':color, 'dcolor':dcolor}
-
-        for band in self.filters.keys():
-            try: # is this "try" even necessary?
-                fit_gp_results = fit_gp(self.lc_correct[band]['phase'],
-                                        self.lc_correct[band]['flux'],
-                                        self.lc_correct[band]['flux_err'])
-                self.lc_final_fits[band]['phase'] = fit_gp_results[0]
-                self.lc_final_fits[band]['flux'] = fit_gp_results[1]
-                self.lc_final_fits[band]['flux_err'] = fit_gp_results[2]
-                self.lc_final_fits[band]['zp'] = self.lc_correct[band]['zp']
-                self.lc_final_fits[band]['mag_sys'] = self.lc_correct[band]['mag_sys']
-            except:
-                pass
 
 
     def display_results(self, band=None, plot_type='mag', save=False, fig_name=None):
@@ -1595,33 +1260,34 @@ class sn(object):
         if band is None:
             band = 'Bessell_B'
 
-        x = np.copy(self.lc_correct[band]['phase'])
-        y = np.copy(self.lc_correct[band]['flux'])
-        yerr = np.copy(self.lc_correct[band]['flux_err'])
-        x_fit = np.copy(self.lc_final_fits[band]['phase'])
-        y_fit = np.copy(self.lc_final_fits[band]['flux'])
-        yerr_fit = np.copy(self.lc_final_fits[band]['flux_err'])
+        x = np.copy(self.corrected_lcs[band]['phase'])
+        y = np.copy(self.corrected_lcs[band]['flux'])
+        yerr = np.copy(self.corrected_lcs[band]['err'])
+        zp = np.copy(self.corrected_lcs[band]['zp'])
+        #x_fit = np.copy(self.lc_final_fits[band]['phase'])
+        #y_fit = np.copy(self.lc_final_fits[band]['flux'])
+        #yerr_fit = np.copy(self.lc_final_fits[band]['flux_err'])
 
         if plot_type=='flux':
             exp = np.round(np.log10(y.max()), 0)
             y_norm = 10**exp
             y /= y_norm
             yerr /= y_norm
-            y_fit /= y_norm
-            yerr_fit /= y_norm
+            #y_fit /= y_norm
+            #yerr_fit /= y_norm
 
         elif plot_type=='mag':
             # y, yerr, y_fit, yerr_fit variables get reassigned
             yerr = np.abs(2.5*yerr/(y*np.log(10)))
-            y = -2.5*np.log10(y) + self.lc_final_fits[band]['zp']
-            yerr_fit = np.abs(2.5*yerr_fit/(y_fit*np.log(10)))
-            y_fit = -2.5*np.log10(y_fit) + self.lc_final_fits[band]['zp']
+            y = -2.5*np.log10(y) + zp
+            #yerr_fit = np.abs(2.5*yerr_fit/(y_fit*np.log(10)))
+            #y_fit = -2.5*np.log10(y_fit) + self.lc_final_fits[band]['zp']
 
 
         f, ax = plt.subplots(figsize=(8,6))
         ax.errorbar(x, y, yerr, fmt='-.o', capsize=3, color='k')
-        ax.plot(x_fit, y_fit, 'r-', alpha=0.5)
-        ax.fill_between(x_fit, y_fit+yerr_fit, y_fit-yerr_fit, alpha=0.5, color='r')
+        #ax.plot(x_fit, y_fit, 'r-', alpha=0.5)
+        #ax.fill_between(x_fit, y_fit+yerr_fit, y_fit-yerr_fit, alpha=0.5, color='r')
 
         ax.text(0.75, 0.9,r'm$_B^{\rm max}$=%.3f$\pm$%.3f'%(mb, dmb), ha='center', va='center', fontsize=15, transform=ax.transAxes)
         ax.text(0.75, 0.8,r'$\Delta$m$_{15}$($B$)=%.3f$\pm$%.3f'%(dm15, dm15err), ha='center', va='center', fontsize=15, transform=ax.transAxes)
@@ -1633,7 +1299,7 @@ class sn(object):
             ax.set_ylabel('Flux [10$^{%.0f}$ erg cm$^{-2}$ s$^{-1}$ $\AA^{-1}$]'%exp, fontsize=16, family='serif')
             ax.set_ylim(y.min()*0.90, y.max()*1.05)
         elif plot_type=='mag':
-            ax.set_ylabel('Apparent Magnitude [mag]', fontsize=16, family='serif')
+            ax.set_ylabel('Apparent Magnitude', fontsize=16, family='serif')
             ax.set_ylim(y.min()*0.98, y.max()*1.02)
             plt.gca().invert_yaxis()
         ax.minorticks_on()

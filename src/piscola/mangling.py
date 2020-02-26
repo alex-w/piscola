@@ -5,7 +5,8 @@ from .spline import fit_spline
 import numpy as np
 import lmfit
 
-def mangling_residual(params, phase_array, wave_array, sed_df, obs_flux_array, norm, bands, filters, kernel, x1_edges, x2_edges, normalize_x1):
+def mangling_residual(params, phase_array, wave_array, flux_ratios_err_array, sed_df,
+                        obs_flux_array, obs_err_array, norm, bands, filters, kernel, x1_edges, x2_edges, normalize_x1):
     """Residual functions for the SED mangling minimization routine.
 
     Lmfit works in such a way that each parameters needs to have a residual value. In the case of the
@@ -45,12 +46,12 @@ def mangling_residual(params, phase_array, wave_array, sed_df, obs_flux_array, n
 
     # set up parameters
     phases_list = list(np.unique(phase_array))
-    init_param_names = np.hstack(np.array([[band + '_' + str(int(phase)) for phase in phases_list] for band in bands]))
+    init_param_names = np.hstack(np.array([[f'{band}_{int(phase)}' for phase in phases_list] for band in bands]))
     param_names = [par_name.lstrip("0123456789\'.-").replace("'", "").replace(".", "_").replace("-", "m") for par_name in init_param_names]
     flux_ratios_array = np.asarray([params[par_name].value for par_name in param_names])
 
     # 2D GP fit
-    phaseXwave, ratio_mu, ratio_std = fit_2dgp(phase_array, wave_array, flux_ratios_array, 0.0,
+    phaseXwave, ratio_mu, ratio_std = fit_2dgp(phase_array, wave_array, flux_ratios_array, 0.0,  #flux_ratios_err_array
                                                 kernel=kernel, x1_edges=x1_edges, x2_edges=x2_edges, normalize_x1=normalize_x1)
     phaseXwave.T[0] = np.round(phaseXwave.T[0], 1)  # the rounding is to avoid stupid python decimals
 
@@ -63,7 +64,6 @@ def mangling_residual(params, phase_array, wave_array, sed_df, obs_flux_array, n
             mask = np.where(phaseXwave.T[0]==phase)
             wave = phaseXwave.T[1][mask]
             ratio = ratio_mu[mask]
-            err = ratio_std[mask]
 
             phase_df = sed_df[sed_df.phase==phase]
             sed_flux = np.interp(wave, phase_df.wave.values, phase_df.flux.values)
@@ -73,18 +73,14 @@ def mangling_residual(params, phase_array, wave_array, sed_df, obs_flux_array, n
             sed_flux_array.append(bands_fluxes)
 
     sed_flux_array = np.hstack(np.array(sed_flux_array).T)  # to have the same shape and order as the observed fluxes
-    residuals = np.abs(obs_flux_array - sed_flux_array)/np.abs(obs_flux_array - sed_flux_array).min()
-    #print(residuals)
-    #residuals = np.abs(-2.5*np.log10(obs_flux_array/sed_flux_array))
-    #print(np.round(np.sqrt(np.sum(residuals**2)), 4))
-    print(np.round(np.sum(residuals**2), 3))
+    residuals = -2.5*np.log10(obs_flux_array/sed_flux_array)
     print(np.round(residuals, 3))
-    print(np.round(np.abs(-2.5*np.log10(obs_flux_array/sed_flux_array)), 3))
 
     return residuals
 
 
-def mangle(phase_array, wave_array, flux_ratios_array, sed_df, obs_flux_array, bands, filters, kernel, x1_edges, x2_edges, normalize_x1):
+def mangle(phase_array, wave_array, flux_ratios_array, flux_ratios_err_array, sed_df,
+            obs_flux_array, obs_err_array, bands, filters, kernel, x1_edges, x2_edges, normalize_x1):
     """Mangling routine.
 
     A mangling of the SED is done by minimizing the the difference between the "observed" fluxes and the fluxes
@@ -123,28 +119,23 @@ def mangle(phase_array, wave_array, flux_ratios_array, sed_df, obs_flux_array, b
     ####################################
     #### optimize mangling function ####
     ####################################
-    params = lmfit.Parameters()  # flux ratios go in here
+    params = lmfit.Parameters()
     phases_list = list(np.unique(phase_array))
-    init_param_names = np.hstack(np.array([[band + '_' + str(int(phase)) for phase in phases_list] for band in bands]))
+    init_param_names = np.hstack(np.array([[f'{band}_{int(phase)}' for phase in phases_list] for band in bands]))
     # "lmfit.Parameters" does not allow parameter names that do not start with letters.
     # It also does not like things like quotes ('), dots (.), etc. in the parameter names at all.
     param_names = [par_name.lstrip("0123456789\'.-").replace("'", "").replace(".", "_").replace("-", "m") for par_name in init_param_names]
 
-    norm = flux_ratios_array.mean()  # we normalize to avoid small numbers in the minimization routine
-    for ratio_val, par_name in zip(flux_ratios_array/norm, param_names):
-        params.add(par_name, value=ratio_val, min=ratio_val*0.5, max=ratio_val*2)   # tighten this constrains for a smoother(?) mangling
+    norm = flux_ratios_array.max()  # we normalize to avoid small numbers in the minimization routine
 
-    args=(phase_array, wave_array, sed_df, obs_flux_array, norm, bands, filters, kernel, x1_edges, x2_edges, normalize_x1)
-    '''result = lmfit.minimizer.minimize(fcn=mangling_residual, params=params, args=args,
-                                      method='nelder',
-                                      #ftol=1e-7, maxfev=3
-                                      **{'maxiter':3, 'maxfev':3, 'xatol':1e-3, 'fatol':1e-3, 'adaptive':True}
-                                     )'''
-    fitter = lmfit.Minimizer(userfcn=mangling_residual, params=params, fcn_args=args,
-                             #**{'maxiter':3, 'maxfev':3, 'xatol':1e-3, 'fatol':1e-3, 'adaptive':True}
-                             )
+    for ratio_val, par_name in zip(flux_ratios_array/norm, param_names):
+        params.add(par_name, value=ratio_val)#, min=ratio_val*0.5, max=ratio_val*2)
+
+    args=(phase_array, wave_array, flux_ratios_err_array/norm, sed_df,
+            obs_flux_array, obs_err_array, norm, bands, filters, kernel, x1_edges, x2_edges, normalize_x1)
+    fitter = lmfit.Minimizer(userfcn=mangling_residual, params=params, fcn_args=args)
     result = fitter.minimize(method='nerlder',
-                            options={'maxiter':3, 'maxfev':3, 'xatol':1e-3, 'fatol':1e-3, 'adaptive':True}
+                                options={'maxiter':3, 'maxfev':3, 'xatol':1e-3, 'fatol':1e-3, 'adaptive':True}
                             )
     ###############################
     #### use optimized results ####
@@ -170,7 +161,7 @@ def mangle(phase_array, wave_array, flux_ratios_array, sed_df, obs_flux_array, b
 
             phase_df = sed_df[sed_df.phase==phase]
             sed_flux = np.interp(wave, phase_df.wave.values, phase_df.flux.values)
-            mod_sed_flux = sed_flux*ratio  # apply mangling function
+            mod_sed_flux = sed_flux*ratio  # convolve SED flux with mangling function
 
             bands_fluxes = [run_filter(wave, mod_sed_flux, filters[band]['wave'], filters[band]['transmission'], filters[band]['response_type']) for band in bands]
             sed_flux_array.append(bands_fluxes)
@@ -198,4 +189,3 @@ def mangle(phase_array, wave_array, flux_ratios_array, sed_df, obs_flux_array, b
                         'result':result}'''
 
     return phaseXwave, ratio_mu, ratio_std
-    #return mangling_results

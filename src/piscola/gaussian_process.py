@@ -62,7 +62,7 @@ def fit_2dgp(x1_data, x2_data, y_data, yerr_data, kernel='matern52', x1_edges=No
 
     if kernel == 'matern52':
         ker = var * george.kernels.Matern52Kernel(lengths, ndim=2)
-        #ker = var * (george.kernels.Matern52Kernel(lengths[0], ndim=2, axes=0) + george.kernels.ExpSquaredKernel(lengths[1], ndim=2, axes=1))
+        #ker = var * george.kernels.Matern52Kernel(lengths[0], ndim=2, axes=0) * george.kernels.ExpSquaredKernel(lengths[1], ndim=2, axes=1)
     elif kernel == 'matern32':
         ker = var * george.kernels.Matern32Kernel(lengths, ndim=2)
     elif kernel == 'squaredexp':
@@ -104,7 +104,8 @@ def fit_2dgp(x1_data, x2_data, y_data, yerr_data, kernel='matern52', x1_edges=No
     step1 = 0.1/x1_norm
     step2 = 5/x2_norm
     if not normalize_x1:
-        step1 = 1/x1_norm
+        # for mangling
+        step1 = 0.5/x1_norm
         step2 = 1/x2_norm
 
     X_predict = np.array(np.meshgrid(np.arange(x1_min, x1_max+step1, step1),
